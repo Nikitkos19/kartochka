@@ -8,16 +8,20 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      - key: NODE_ENV
+        value: production
       - key: HOST
         value: 0.0.0.0
+      - key: ADMIN_TEST_TOPUP
+        value: "true"
+      - key: DEMO_PAYMENTS
+        value: "false"
       - key: AI_API_BASE_URL
         value: https://apimira.com/v1
       - key: AI_IMAGE_MODEL
         value: openai/gpt-image-2.5-sunburst
       - key: AI_MODERATION_MODEL
         value: openai/gpt-5.4-mini
-      - key: DEMO_PAYMENTS
-        value: "true"
       - key: AI_API_KEY
         sync: false
       - key: ADMIN_EMAIL

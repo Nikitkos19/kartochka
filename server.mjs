@@ -20,6 +20,7 @@ const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
 const secureCookies = process.env.NODE_ENV === 'production';
 const demoPayments = process.env.DEMO_PAYMENTS === 'true' && !secureCookies;
+const adminTestTopup = process.env.ADMIN_TEST_TOPUP === 'true';
 const accessEmails = new Set((process.env.ACCESS_EMAILS || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean));
 const privateAccess = accessEmails.size > 0;
 const registrationOpen = !privateAccess && process.env.REGISTRATION_OPEN !== 'false';
@@ -205,7 +206,7 @@ const server=createServer(async(req,res)=>{
   }
   if(req.method==='POST' && url.pathname==='/api/test/topup') {
     const u=requireUser(req,res); if(!u)return;
-    if(!demoPayments) return json(res,503,{error:'Тестовое пополнение выключено.'});
+    if(!demoPayments && !(adminTestTopup && u.role==='admin')) return json(res,adminTestTopup?403:503,{error:adminTestTopup?'Тестовые токены на хостинге может начислять только администратор.':'Тестовое пополнение выключено.'});
     try {
       const body=await readBody(req,5_000),tokens=Number(body.tokens);
       if(![10,50,100].includes(tokens)) return json(res,400,{error:'Выберите пакет из списка.'});
@@ -261,7 +262,7 @@ const server=createServer(async(req,res)=>{
       recentUsers:db.prepare('SELECT u.email,u.role,u.created_at,COALESCE(w.tokens,0) tokens FROM users u LEFT JOIN wallets w ON w.user_id=u.id ORDER BY u.created_at DESC LIMIT 20').all()
     });
   }
-  if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,demoPayments,aiConfigured:Boolean(apiKey&&model),registrationOpen,privateAccess,generationMode:'full-card',moderationEnabled:true,moderationConfigured:Boolean(apiKey&&moderationModel),moderationPolicyVersion});
+  if(req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,demoPayments,adminTestTopup,aiConfigured:Boolean(apiKey&&model),registrationOpen,privateAccess,generationMode:'full-card',moderationEnabled:true,moderationConfigured:Boolean(apiKey&&moderationModel),moderationPolicyVersion});
   if(req.method!=='GET'&&req.method!=='HEAD') return json(res,405,{error:'Метод не поддерживается.'});
   const requested=url.pathname==='/'?'/index.html':decodeURIComponent(url.pathname),allowedFiles=new Set(['/index.html','/app.js','/style.css','/studio-hero.png']);
   if(!allowedFiles.has(requested)) return json(res,404,{error:'Не найдено.'});
