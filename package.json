@@ -1,0 +1,9 @@
+{
+  "name": "catalog-studio",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "test": "node moderation-tests.mjs && node auth-smoke.mjs && node custom-prompt-ui.mjs" },
+  "dependencies": { "better-sqlite3": "^12.8.0" },
+  "engines": { "node": ">=24" }
+}

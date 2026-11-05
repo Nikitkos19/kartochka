@@ -1,0 +1,6 @@
+Image-generation method: built-in ImageGen tool.
+Purpose: original photographic background for the Catalog Studio website.
+Saved asset: studio-hero.png
+
+Prompt:
+Create a premium photographic website hero asset, landscape 16:9, no text, no UI, no borders, no logos. A single sculptural dark walnut lounge chair with cream boucle upholstery, on a limestone platform in a sophisticated modern interior opening onto a misty pine forest and distant rocky mountains through enormous floor-to-ceiling glass. Hero object placed in RIGHT half, entire LEFT third is dark atmospheric negative space with subtle textured shadow suitable for white headlines overlaid later. Muted forest green, olive, charcoal, natural stone, warm wood. Moody overcast cinematic daylight, hyperreal architectural editorial photography, tactile natural materials, very high-end furniture advertising, atmospheric depth, sharp chair details, soft forest background. Camera wide view, landscape composition. This is an original product photography asset for an infographic design service, not a finished website screenshot.
