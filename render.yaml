@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: kartochka
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: HOST
+        value: 0.0.0.0
+      - key: AI_API_BASE_URL
+        value: https://apimira.com/v1
+      - key: AI_IMAGE_MODEL
+        value: openai/gpt-image-2.5-sunburst
+      - key: AI_MODERATION_MODEL
+        value: openai/gpt-5.4-mini
+      - key: DEMO_PAYMENTS
+        value: "true"
+      - key: AI_API_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false

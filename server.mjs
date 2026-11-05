@@ -17,7 +17,7 @@ if (existsSync(resolve(root, '.env'))) {
   }
 }
 const port = Number(process.env.PORT || 3000);
-const host = process.env.HOST || '127.0.0.1';
+const host = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
 const secureCookies = process.env.NODE_ENV === 'production';
 const demoPayments = process.env.DEMO_PAYMENTS === 'true' && !secureCookies;
 const accessEmails = new Set((process.env.ACCESS_EMAILS || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean));
