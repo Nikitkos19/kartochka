@@ -6,7 +6,8 @@ import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSa
 import { promisify } from 'node:util';
 import Database from 'better-sqlite3';
 import { normalizeCustomPrompt, validateCardRequest, generateProductCard } from './image-generation.mjs';
-import { moderateProductImage, moderationPolicyVersion } from './product-moderation.mjs';
+import { readBody, parseCookies } from './http-utils.mjs';
+import { moderateProductImage, moderationPolicyVersion, isApprovedPolicyVersion } from './product-moderation.mjs';
 
 const scrypt = promisify(scryptCallback);
 const root = resolve('.');
@@ -51,8 +52,9 @@ if (!db.prepare('PRAGMA table_info(generation_assets)').all().some(column => col
 
 if (!db.prepare('PRAGMA table_info(generation_assets)').all().some(column => column.name === 'moderation_policy')) db.exec("ALTER TABLE generation_assets ADD COLUMN moderation_policy TEXT NOT NULL DEFAULT ''");
 function auditModeration(requestId) {
-  return entry => db.prepare('INSERT INTO moderation_checks(request_id,stage,policy_version,decision,categories_json,reason,created_at) VALUES(?,?,?,?,?,?,?)').run(requestId,entry.stage,entry.policyVersion,entry.decision,JSON.stringify(entry.categories),entry.reason,new Date().toISOString());
+  return entry => db.prepare('INSERT INTO moderation_checks(request_id,stage,policy_version,decision,categories_json,reason,created_at,details_json) VALUES(?,?,?,?,?,?,?,?)').run(requestId,entry.stage,entry.policyVersion,entry.decision,JSON.stringify(entry.categories),entry.reason,new Date().toISOString(),JSON.stringify(entry.details||[]));
 }
+if (!db.prepare('PRAGMA table_info(moderation_checks)').all().some(column => column.name === 'details_json')) db.exec("ALTER TABLE moderation_checks ADD COLUMN details_json TEXT NOT NULL DEFAULT '[]'");
 const moderationConfig = { base, apiKey, model:moderationModel };
 
 const nowIso = () => new Date().toISOString();
@@ -64,21 +66,10 @@ function json(res, status, data, headers = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers });
   res.end(JSON.stringify(data));
 }
-function readBody(req, max = 40_000) {
-  return new Promise((resolveBody, reject) => {
-    let raw = '', failed = false;
-    req.on('data', chunk => { if (failed) return; raw += chunk; if (raw.length > max) { failed = true; reject(Object.assign(new Error('Запрос слишком большой.'), { status: 413 })); } });
-    req.on('end', () => { if (failed) return; try { resolveBody(JSON.parse(raw || '{}')); } catch { reject(Object.assign(new Error('Некорректный JSON.'), { status: 400 })); } });
-    req.on('error', reject);
-  });
-}
 function originOk(req) {
   const origin = req.headers.origin;
   if (!origin) return true;
   try { return new URL(origin).host === req.headers.host; } catch { return false; }
-}
-function parseCookies(header = '') {
-  return Object.fromEntries(header.split(';').map(v => v.trim()).filter(Boolean).map(v => { const i = v.indexOf('='); return [v.slice(0,i), decodeURIComponent(v.slice(i+1))]; }));
 }
 function requestIsSecure(req) {
   return secureCookies || Boolean(req.socket.encrypted) || (['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && req.headers['x-forwarded-proto'] === 'https');
@@ -149,7 +140,7 @@ if(adminEmail && adminPassword && !db.prepare('SELECT id FROM users WHERE email=
 }
 setInterval(()=>db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()),60*60*1000).unref();
 
-const server=createServer(async(req,res)=>{
+async function handleRequest(req,res){
   const url=new URL(req.url,`http://${req.headers.host||'localhost'}`), ip=req.socket.remoteAddress||'unknown';
   if(req.method==='GET' && url.pathname==='/api/me') { const u=currentUser(req); return json(res,200,{user:u?userPayload(u):null}); }
   if(req.method==='POST' && !originOk(req)) return json(res,403,{error:'Запрос с чужого сайта отклонён.'});
@@ -226,7 +217,7 @@ const server=createServer(async(req,res)=>{
       if(wallet(u.id)<1)throw Object.assign(new Error('Недостаточно токенов. Пополните баланс.'),{status:402});
       await moderateProductImage(body,`data:${body.image.mime};base64,${body.image.bytes.toString('base64')}`,'input',moderationConfig,audit);
       generationId=reserveToken(u.id,body.page);
-    } catch(e) { return json(res,e.status||500,{error:e.message||'Не удалось начать генерацию.',tokens:wallet(u.id),...(e.moderationCode?{moderationCode:e.moderationCode,requestId}:{})}); }
+    } catch(e) { return json(res,e.status||500,{error:e.message||'Не удалось начать генерацию.',tokens:wallet(u.id),...(e.moderationCode?{moderationCode:e.moderationCode,moderation:e.moderation,requestId}:{})}); }
     try {
       const imageData=await generateImage(body);
       await moderateProductImage(body,imageData,'output',moderationConfig,audit);
@@ -241,7 +232,7 @@ const server=createServer(async(req,res)=>{
       return json(res,200,{imageData,generationId,renderMode:'full-card',tokens:wallet(u.id)});
     } catch(e) {
       refundToken(generationId,u.id,e.message||'Ошибка генерации');
-      return json(res,e.status||502,{error:e.message||'Генерация не выполнена. Токен возвращён.',tokens:wallet(u.id),...(e.moderationCode?{moderationCode:e.moderationCode,requestId}:{})});
+      return json(res,e.status||502,{error:e.moderationCode?`${e.message} Токен возвращён.`:e.message||'Генерация не выполнена. Токен возвращён.',tokens:wallet(u.id),...(e.moderationCode?{moderationCode:e.moderationCode,moderation:e.moderation,requestId}:{})});
     }
   }
     const assetMatch=url.pathname.match(/^\/api\/generations\/([a-f0-9-]+)\/image$/i);
@@ -249,9 +240,15 @@ const server=createServer(async(req,res)=>{
     const u=requireUser(req,res); if(!u)return;
     const asset=db.prepare('SELECT file_path,mime_type,render_mode,moderation_policy FROM generation_assets WHERE generation_id=? AND user_id=?').get(assetMatch[1],u.id);
     if(!asset)return json(res,404,{error:'Изображение не найдено.'});
-    if(asset.moderation_policy!==moderationPolicyVersion)return json(res,423,{error:'Эта карточка создана до текущей проверки безопасности. Создайте новую сборку для просмотра и скачивания.',moderationCode:'MODERATION_REQUIRED'});
+    if(!isApprovedPolicyVersion(asset.moderation_policy))return json(res,423,{error:'Эта карточка создана до текущей проверки безопасности. Создайте новую сборку для просмотра и скачивания.',moderationCode:'MODERATION_REQUIRED'});
     try {const bytes=await readFile(asset.file_path);res.writeHead(200,{'Content-Type':asset.mime_type,'Cache-Control':'private, max-age=86400','X-Content-Type-Options':'nosniff','X-Catalog-Render-Mode':asset.render_mode});return res.end(bytes)} catch {return json(res,404,{error:'Файл изображения отсутствует.'})}
-  }if(req.method==='GET' && url.pathname==='/api/admin/overview') {
+  }
+  if(req.method==='GET' && url.pathname==='/api/admin/moderation') {
+    const u=requireAdmin(req,res);if(!u)return;
+    const rows=db.prepare('SELECT request_id,stage,policy_version,decision,categories_json,reason,details_json,created_at FROM moderation_checks ORDER BY created_at DESC,rowid DESC LIMIT 30').all();
+    return json(res,200,{checks:rows.map(row=>({requestId:row.request_id,stage:row.stage,policyVersion:row.policy_version,decision:row.decision,categories:JSON.parse(row.categories_json),reason:row.reason,details:JSON.parse(row.details_json),createdAt:row.created_at}))});
+  }
+  if(req.method==='GET' && url.pathname==='/api/admin/overview') {
     const u=requireAdmin(req,res); if(!u)return;
     return json(res,200,{
       users:db.prepare('SELECT COUNT(*) count FROM users WHERE role=?').get('user').count,
@@ -270,5 +267,15 @@ const server=createServer(async(req,res)=>{
   if(!file.startsWith(root+sep)) return json(res,404,{error:'Не найдено.'});
   try { const bytes=await readFile(file);res.writeHead(200,{'Content-Type':({'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png'})[extname(file)],'X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin'});res.end(req.method==='HEAD'?undefined:bytes); }
   catch { json(res,404,{error:'Не найдено.'}); }
+}
+const server=createServer((req,res)=>{
+  handleRequest(req,res).catch(error=>{
+    const requestId=randomUUID();
+    const status=error instanceof URIError||error.code==='ERR_INVALID_URL'?400:500;
+    console.error(JSON.stringify({event:'http_request_failed',requestId,status}));
+    if(res.destroyed)return;
+    if(res.headersSent){res.destroy();return}
+    json(res,status,{error:status===400?'Некорректный адрес запроса.':'Не удалось обработать запрос. Попробуйте позже.',requestId});
+  });
 });
 server.listen(port,host,()=>console.log(`Сервер слушает http://${host}:${port}`));
