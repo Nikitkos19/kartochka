@@ -56,6 +56,10 @@ try {
   await start();
   assert.equal((await fetch(base)).status, 200);
   assert.equal((await request('/api/me')).data.user, null);
+  assert.equal((await request('/api/me',{cookie:'catalog_session=%'})).data.user,null);
+  assert.equal((await fetch(base+'/%E0%A4%A')).status,400);
+  assert.equal((await request('/api/health')).data.ok,true);
+  assert.equal((await request('/api/admin/moderation')).status,401);
   assert.equal((await request('/api/wallet')).status, 401);
   assert.equal((await request('/api/auth/register', { method: 'POST', body: { email, password: 'short' } })).status, 400);
   const registered = await request('/api/auth/register', { method: 'POST', body: { email, password }, origin: base });
@@ -66,6 +70,7 @@ try {
   assert.equal((await request('/api/me', { cookie })).data.user.email, email);
   assert.equal((await request('/api/auth/register', { method: 'POST', body: { email, password } })).status, 409);
   assert.equal((await request('/api/admin/overview', { cookie })).status, 403);
+  assert.equal((await request('/api/admin/moderation', { cookie })).status,403);
   assert.equal((await request('/api/test/topup', { method: 'POST', cookie, body: { tokens: 10 }, origin: 'https://other.example' })).status, 403);
   const topup = await request('/api/test/topup', { method: 'POST', cookie, body: { tokens: 10 } });
   assert.equal(topup.status, 200);
@@ -183,6 +188,9 @@ try {
     assert.equal((await request('/api/wallet',{cookie:promptCookie})).data.tokens,8);
     assert.equal(seenRequests.length,beforeImages+(mode.startsWith('OUTPUT_')?1:0),'Rejected input must never reach generator');
     assert.ok(blocked.data.requestId&&blocked.data.moderationCode);
+    assert.equal(blocked.data.moderation.stage,mode.startsWith('OUTPUT_')?'output':'input');
+    assert.equal(blocked.data.moderation.policyVersion,moderationPolicyVersion);
+    if(!mode.includes('ERROR')&&!mode.includes('MALFORMED'))assert.deepEqual(blocked.data.moderation.categories,['WEAPONS']);
   }
   const checks=new Database(join(sandbox,'data','catalog.sqlite3'));
   assert.equal(checks.prepare('SELECT count(*) n FROM generation_assets').get().n,2,'Rejected output must not be persisted');
@@ -192,7 +200,17 @@ try {
   const legacy=await fetch(base+`/api/generations/${customized.data.generationId}/image`,{headers:{Cookie:promptCookie}});
   assert.equal(legacy.status,423,'Images without current moderation approval must not be delivered');
   checks.prepare('UPDATE generation_assets SET moderation_policy=? WHERE generation_id=?').run(moderationPolicyVersion,customized.data.generationId);
+  for(const version of ['product-v1-ae67d6ff5847','product-v1-dfd5fd26b3fa']){
+    checks.prepare('UPDATE generation_assets SET moderation_policy=? WHERE generation_id=?').run(version,customized.data.generationId);
+    const oldApproved=await fetch(base+`/api/generations/${customized.data.generationId}/image`,{headers:{Cookie:promptCookie}});
+    assert.equal(oldApproved.status,200,'Known equivalent policy approvals remain valid');
+  }
+  checks.prepare('UPDATE generation_assets SET moderation_policy=? WHERE generation_id=?').run(moderationPolicyVersion,customized.data.generationId);
   checks.close();
+  const log=await request('/api/admin/moderation',{cookie:session(admin)});
+  assert.equal(log.status,200,JSON.stringify(log.data));
+  assert.ok(log.data.checks.some(c=>c.decision==='REJECT'&&c.reason==='Fixture decision'&&c.details.length===2));
+  assert.ok(log.data.checks.every(c=>!Object.hasOwn(c,'image')&&!Object.hasOwn(c,'email')&&!Object.hasOwn(c,'prompt')));
   await stop();
   await start({ACCESS_EMAILS:`${email},${adminEmail}`});
   const reloaded=await fetch(base+`/api/generations/${customized.data.generationId}/image`,{headers:{Cookie:promptCookie}});
